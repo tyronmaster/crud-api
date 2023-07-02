@@ -5,6 +5,7 @@ import { validate } from 'uuid';
 import { API_METHODS, API_LINK, API_LINK_ID } from './apidata';
 import User from './user/user';
 import IUser from './user/user-inreface';
+import { exit } from 'process';
 
 const PORT = Number(process.env.PORT || 4000);
 const HOSTNAME = process.env.SERVER_HOSTNAME || 'localhost';
@@ -61,7 +62,7 @@ async function eventListener(request: IncomingMessage, response: ServerResponse)
         return console.error(`Page ${url} not found`);
     }
     if (urlHasId && !idIsValid) {
-        response.writeHead(400);
+        response.writeHead(404);
         response.end('Invalid ID');
         return console.error(`Invalid ${id}`);
     }
@@ -138,7 +139,7 @@ async function eventListener(request: IncomingMessage, response: ServerResponse)
 
 const server = http.createServer(eventListener);
 
-
+process.on('SIGINT', () => exit());
 
 try {
     server.listen(PORT, HOSTNAME, () => {

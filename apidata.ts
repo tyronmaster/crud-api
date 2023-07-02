@@ -7,3 +7,8 @@ export enum API_METHODS {
     PUT = 'PUT',
     DELETE = 'DELETE'
 }
+
+export enum API_ERROR_CODES {
+    E_400 = `Incorrect user data`,
+    E_404 = 'Invalid ID',
+}
