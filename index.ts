@@ -6,145 +6,60 @@ import { API_METHODS, API_LINK, API_LINK_ID } from './apidata';
 import User from './user/user';
 import IUser from './user/user-inreface';
 import { exit } from 'process';
+import os from 'os';
+import cluster from 'cluster';
+import singleMode from './user/singlemode';
 
 const PORT = Number(process.env.PORT || 4000);
 const HOSTNAME = process.env.SERVER_HOSTNAME || 'localhost';
-const userDb = new User();
 
-async function requestBodyExtractor(request: IncomingMessage): Promise<IUser> {
-    return new Promise((resolve, reject) => {
-        let body: Buffer[] = [];
-        let requestBody: string;
-        request.on('data', (chunk: Buffer) => {
-            body.push(chunk);
-        }).on('end', () => {
-            requestBody = Buffer.concat(body).toString();
-            try {
-                const userData = JSON.parse(requestBody);
-                resolve(userData);
-            } catch {
-                reject('Wrong JSON');
-            }
-        });
-    });
-}
+const APP_MODE = process.env.MODE || 'single';
 
-function urlValidator(url: string) {
-    if (url === API_LINK) return { urlIsValid: true, urlHasId: false, idIsValid: undefined, id: undefined };
-    else {
-        const urlHasId = (url.indexOf(API_LINK_ID) === 0) &&
-            (url.length > API_LINK_ID.length);
-        if (urlHasId) {
-            const id = url.replace(API_LINK_ID, '');
-            if (validate(id)) {
-                return { urlIsValid: true, urlHasId, idIsValid: true, id };
-            } else {
-                return { urlIsValid: true, urlHasId, idIsValid: false, id };
-            }
+function serverInitializer(port: number, hostname: string, database: User) {
+    const eventListener =
+        async (request: IncomingMessage, response: ServerResponse) => {
+            await singleMode(database, request, response);
         }
-        return { urlIsValid: false, urlHasId, idIsValid: undefined, id: undefined };
+    const server = http.createServer(eventListener);
+    try {
+        server.listen(PORT, HOSTNAME, () => {
+            console.log(`${APP_MODE === 'multi' ? cluster.isPrimary ? 'Primary' : 'Worker' : 'Server'} ${process.pid} starts on http://${HOSTNAME}:${PORT}`);
+        })
+    } catch {
+        console.log('WOW server listener eror');
     }
 }
 
+function application() {
+    const userDb = new User();
 
-async function eventListener(request: IncomingMessage, response: ServerResponse) {
-    const { headers, method, url } = request;
+    if (APP_MODE === 'single') serverInitializer(PORT, HOSTNAME, userDb);
 
-    const {
-        urlIsValid,
-        urlHasId,
-        idIsValid,
-        id } = urlValidator(url as string);
+    if (APP_MODE === 'multi') {
+        const coresCount = os.availableParallelism();
+        // console.log(coresCount);
+        if (cluster.isPrimary) {
+            // create base for primary
+            // then send response from worker to primary
+            serverInitializer(PORT, HOSTNAME, userDb);
 
-    if (!urlIsValid) {
-        response.writeHead(404);
-        response.end(`Page ${url} not found`);
-        return console.error(`Page ${url} not found`);
-    }
-    if (urlHasId && !idIsValid) {
-        response.writeHead(404);
-        response.end('Invalid ID');
-        return console.error(`Invalid ${id}`);
-    }
-
-    switch (method) {
-        case (API_METHODS.GET): {
-            if (idIsValid) {
-                try {
-                    const userById = await userDb.getUserById(id);
-                    response.writeHead(200);
-                    response.end(`${JSON.stringify(userById)}`);
-                    break;
-                } catch {
-                    response.writeHead(404);
-                    response.end(`User ${id} not found`);
-                    break;
-                }
+            console.log(`Primary ${process.pid} is running`);
+            for (let i = 0; i < coresCount; i++) {
+                cluster.fork({ PORT: PORT + i + 1 });
             }
-            const allUsers = await userDb.getAllUsers();
-            response.writeHead(200);
-            response.end(`${JSON.stringify(allUsers)}`);
-            break;
-        }
-        case (API_METHODS.POST): {
-            try {
-                const newUserData = await requestBodyExtractor(request);
-                const newUser = await userDb.createUser(newUserData);
-                response.writeHead(200);
-                response.end(`${JSON.stringify(newUser)}`);
-                break;
-            } catch {
-                response.writeHead(400);
-                response.end(`Incorrect user data`);
-                break;
+            for (const id in cluster.workers) {
+                cluster.workers[id]?.on('message', (data) => console.log(data));
             }
-        }
-        case (API_METHODS.PUT): {
-            if (idIsValid) {
-                try {
-                    const userDataToUpdate = await requestBodyExtractor(request);
-                    const updatedUser = await userDb.updateUserById(id, userDataToUpdate)
-                    response.writeHead(200);
-                    response.end(`${JSON.stringify(updatedUser)}`);
-                    break;
-                } catch {
-                    response.writeHead(400);
-                    response.end(`Incorrect user data`);
-                    break;
-                }
-            }
-        }
-        case (API_METHODS.DELETE): {
-            if (idIsValid) {
-                try {
-                    const deletedUser = await userDb.deleteUser(id);
-                    response.writeHead(204);
-                    response.end(`User ${id} removed`);
-                    break;
-                } catch {
-                    response.writeHead(400);
-                    response.end(`Incorrect user data`);
-                    break;
-                }
-            }
-        }
-        default: {
-            response.writeHead(500);
-            response.end(`Server error: unknown method`);
-            return console.error(`Server error: unknown method`);
+            cluster.on('exit', (worker, code, signal) => {
+                console.log(`worker ${worker.process.pid} died`);
+            });
+        } else {
+            serverInitializer(PORT, HOSTNAME, userDb);
+            // console.log(`Worker ${process.pid} started on ${PORT}`);
         }
     }
-
 }
 
-const server = http.createServer(eventListener);
+application();
 
 process.on('SIGINT', () => exit());
-
-try {
-    server.listen(PORT, HOSTNAME, () => {
-        console.log(`Process ${process.pid} runs server on http://${HOSTNAME}:${PORT}`);
-    })
-} catch {
-    console.log('WOW server listener eror');
-}
